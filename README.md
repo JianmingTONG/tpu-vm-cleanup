@@ -38,14 +38,38 @@ evidence, and shared-memory keys. It creates no backup. Include the same `--keep
 options when applying a preview. Applying performs a fresh inventory; it does
 not replay a saved report.
 
+## Include all local user data
+
+Use `--scope all-local` to also select hidden configuration, credentials
+(including SSH keys and GitHub authentication), shell history, session data,
+and old cleanup scripts and reports. This mode removes the normal name-based
+exclusions in the home and temporary directories.
+
+```bash
+# Preview the broader selection.
+/usr/bin/python3 cleanup_tpu_vm.py --scope all-local
+
+# Apply only after saving needed data and finishing workloads.
+/usr/bin/python3 cleanup_tpu_vm.py --scope all-local --apply --discard-local-work
+```
+
+Deleting SSH keys and login configuration can prevent future access to the VM.
+The running script's enclosing cleanup target, current report, explicit
+`--keep` paths, paths in use, mounts, other users' files, and special files are
+still preserved. Active workloads still block deletion. The JSON report lists
+every preserved entry and its reason; this mode does not promise an empty home
+directory. Files outside the listed cleanup roots are not scanned. It performs
+ordinary file deletion, not secure disk erasure or an operating-system reset.
+
 ## Scope and protections
 
 | Scope | Files considered |
 | --- | --- |
 | `temp` | User-owned entries in `/tmp`, `/var/tmp`, and `/dev/shm`, plus `~/.cache` and `~/.pytest_cache` |
 | `all` (default) | Everything in `temp`, plus other entries in the user's home directory |
+| `all-local` | The same roots as `all`, including normally excluded configuration, credentials, session data, and old cleanup files |
 
-The script preserves configured credential and shell-configuration paths,
+The `temp` and `all` scopes preserve configured credential and shell-configuration paths,
 Codex/session directories, TPU runtime files, its own enclosing directory, and
 cleanup reports. The exact exclusions are `HOME_KEEP` and `TEMP_KEEP` in the
 script. Credentials stored elsewhere are not automatically recognized; use
@@ -69,9 +93,10 @@ and do not start jobs during cleanup.
 /usr/bin/python3 -B -m unittest -v test_cleanup_tpu_vm
 ```
 
-The 19 tests cover previews, deletion gates, workload detection, credential
+The 25 tests cover previews, deletion gates, workload detection, credential
 exclusions, explicit preservation, symlinks, mounts, special files, ownership,
-target replacement, and report handling. Test deletions use disposable fixtures.
+target replacement, report handling, and the broader `all-local` scope.
+Test deletions use disposable fixtures.
 
 Exit status is `0` for a successful preview or cleanup, `2` for a blocked apply
 or invalid arguments, and `1` for an operational error or interrupted cleanup.

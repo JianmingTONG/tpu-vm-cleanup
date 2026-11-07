@@ -56,6 +56,26 @@ class CleanupTests(unittest.TestCase):
         candidates, _ = self.plan(scope='temp')
         self.assertEqual({Path(t['path']).name for t in candidates}, {'.cache', 'experiment'})
 
+    def test_all_local_selects_previously_excluded_files(self):
+        for name in ['home/.ssh/key', 'home/.config/gh/hosts.yml', 'home/.codex/state',
+                     'home/.local/data', 'home/.gitconfig', 'home/.bash_history',
+                     'home/cleanup_tpu_vm_old.py', 'home/cleanup-tpu-vm-report-old.json',
+                     'tmp/codex-old/state', 'tmp/tmux-old/regular-file', 'tmp/libtpu_lockfile']:
+            self.file(name)
+        candidates, skipped = self.plan(scope='all-local')
+        self.assertEqual(len(candidates), 11)
+        self.assertEqual(skipped, [])
+
+    def test_all_local_still_preserves_kept_in_use_mounted_and_special_paths(self):
+        kept = self.file('home/.ssh/key')
+        active = self.file('home/.codex/state')
+        mounted = self.file('tmp/work/mounted/data')
+        os.mkfifo(self.tmp / 'pipe')
+        candidates, skipped = self.plan(scope='all-local', keep=[kept],
+                                        references=[(active, 123)], mounts=[mounted.parent])
+        self.assertEqual(candidates, [])
+        self.assertEqual(len(skipped), 4)
+
     def test_nested_keep_preserves_whole_project(self):
         wanted = self.file('home/CROSS/P5/unpublished.py')
         self.file('home/CROSS/other.txt')
@@ -198,6 +218,52 @@ class CleanupTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_main(['--report', str(report)], [])
         self.assertEqual(report.read_text(), 'valuable contents')
+
+    def test_all_local_dry_run_includes_credentials_without_deleting(self):
+        credentials = self.file('home/.ssh/key')
+        report = self.home / 'preview.json'
+        result = self.run_main(['--scope', 'all-local', '--report', str(report)], [([], [], [])])
+        self.assertEqual(result, 0)
+        self.assertTrue(credentials.exists())
+        data = json.loads(report.read_text())
+        self.assertEqual(data['scope'], 'all-local')
+        self.assertEqual(data['candidates'][0]['path'], str(credentials.parent))
+        self.assertEqual(data['deleted'], [])
+
+    def test_all_local_apply_removes_local_data_but_preserves_runner_report_and_keep(self):
+        credentials = self.file('home/.ssh/key')
+        config = self.file('home/.config/gh/hosts.yml')
+        project = self.file('home/project/unpublished.py')
+        old_report = self.file('home/cleanup-tpu-vm-report-old.json')
+        temp = self.file('tmp/codex-old/data')
+        runner = self.file('home/tool/cleanup_tpu_vm.py')
+        wanted = self.file('home/wanted/data')
+        report = self.home / 'current-report.json'
+        with patch.object(cleanup, '__file__', str(runner)):
+            result = self.run_main(['--scope', 'all-local', '--apply', '--discard-local-work',
+                                    '--keep', str(wanted), '--report', str(report)],
+                                   [([], [], []), ([], [], [])])
+        self.assertEqual(result, 0)
+        for path in [credentials, config, project, old_report, temp]:
+            self.assertFalse(path.exists(), str(path))
+        for path in [runner, wanted, report]:
+            self.assertTrue(path.exists(), str(path))
+        data = json.loads(report.read_text())
+        self.assertEqual(data['status'], 'complete')
+        self.assertEqual(len(data['deleted']), 5)
+
+    def test_all_local_apply_requires_discard_acknowledgement(self):
+        credentials = self.file('home/.ssh/key')
+        result = self.run_main(['--scope', 'all-local', '--apply'], [([], [], [])])
+        self.assertEqual(result, 2)
+        self.assertTrue(credentials.exists())
+
+    def test_all_local_active_worker_still_blocks_deletion(self):
+        credentials = self.file('home/.ssh/key')
+        result = self.run_main(['--scope', 'all-local', '--apply', '--discard-local-work'],
+                               [([{'pid': 123, 'name': 'python'}], [], [])])
+        self.assertEqual(result, 2)
+        self.assertTrue(credentials.exists())
 
 
 if __name__ == '__main__':

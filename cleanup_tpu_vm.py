@@ -6,16 +6,24 @@ Examples:
   ./cleanup_tpu_vm.py --scope temp                 # Preview temp files/caches
   ./cleanup_tpu_vm.py --scope all --keep ~/CROSS    # Preserve a project
   ./cleanup_tpu_vm.py --scope all --apply --discard-local-work
+  ./cleanup_tpu_vm.py --scope all-local             # Also preview credentials/config
+  ./cleanup_tpu_vm.py --scope all-local --apply --discard-local-work
 
 The last command permanently deletes the listed files, including unpublished
 source, experiment evidence, checkpoints, environments, and shared-memory keys.
 It makes no backup. Run only after saving wanted data and finishing workloads.
 
 Scope 'temp' covers user-owned entries in /tmp, /var/tmp, /dev/shm, plus ~/.cache
-and ~/.pytest_cache. Scope 'all' additionally covers home-directory contents.
-OS files, other users' files, mounts, login/configuration files, Codex/session
-files, this script, its tests and reports are preserved. Symlinks are unlinked,
-never followed. No sudo, process termination, service changes or remote writes.
+and ~/.pytest_cache. Scope 'all' additionally covers home-directory contents,
+preserving configured login/configuration and session paths and cleanup files.
+Scope 'all-local' removes those exclusions: credentials, hidden configuration,
+session data, old cleanup scripts and old reports become deletion candidates.
+Deleting SSH keys and login configuration can prevent future access to the VM.
+All scopes preserve OS files, other users' files, mounts, special files, paths
+in use, explicit --keep paths, the running script's enclosing cleanup target,
+and the current report. Symlinks are unlinked, never followed. No sudo, process
+termination, service changes or remote writes. This is file deletion, not
+secure disk erasure; user data outside the listed roots is not scanned.
 Deletion is blocked while other user workloads are running. Process checks are
 snapshots, not a scheduler lock: do not start jobs during cleanup.
 """
@@ -113,7 +121,7 @@ def process_snapshot(uid):
             continue  # A process or descriptor exited during observation.
         except PermissionError as exc:
             # Linux intentionally hides the descriptors of privilege-separated
-            # SSH/PAM session processes. Their session/config paths are excluded.
+            # SSH/PAM session processes, which are allowed in every scope.
             if name not in {'sshd', '(sd-pam)'}:
                 errors.append(f'Cannot inspect PID {proc.name}: {exc.strerror}')
         except OSError as exc:
@@ -148,7 +156,7 @@ def tree_bytes(path, uid, mounts):
 def build_plan(home, scope, keep, references, uid, mounts, temp_roots=TEMP_ROOTS):
     candidates, skipped = [], []
     roots = list(temp_roots)
-    if scope == 'all':
+    if scope in {'all', 'all-local'}:
         roots.append(home)
     entries = []
     for root in roots:
@@ -166,10 +174,11 @@ def build_plan(home, scope, keep, references, uid, mounts, temp_roots=TEMP_ROOTS
             info = path.lstat()
             if info.st_uid != uid:
                 reason = 'owned by another user'
-            elif in_home and (path.name in HOME_KEEP or path.name.startswith(
+            elif scope != 'all-local' and in_home and (path.name in HOME_KEEP or path.name.startswith(
                     ('cleanup_tpu_vm', 'test_cleanup_tpu_vm', 'cleanup-tpu-vm-report-'))):
                 reason = 'configuration, credentials or cleanup tool'
-            elif not in_home and any(fnmatch.fnmatchcase(path.name, p) for p in TEMP_KEEP):
+            elif scope != 'all-local' and not in_home and any(
+                    fnmatch.fnmatchcase(path.name, p) for p in TEMP_KEEP):
                 reason = 'session or TPU runtime files'
             elif any(beneath(p, path) or beneath(path, p) for p in keep):
                 reason = 'explicitly preserved'
@@ -221,10 +230,11 @@ def human_size(size):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--scope', choices=['temp', 'all'], default='all')
+    parser.add_argument('--scope', choices=['temp', 'all', 'all-local'], default='all',
+                        help='all-local also selects credentials, configuration and session data')
     parser.add_argument('--apply', action='store_true', help='Delete the planned files')
     parser.add_argument('--discard-local-work', action='store_true',
-                        help='Acknowledge permanent loss of local source and experiment data')
+                        help='Acknowledge permanent loss of selected data, including credentials in all-local scope')
     parser.add_argument('--keep', type=Path, action='append', default=[], metavar='PATH',
                         help='Preserve a path (repeatable; protects its enclosing cleanup target)')
     parser.add_argument('--report', type=Path, help='Write a new JSON report; never overwrite a file')
@@ -249,6 +259,9 @@ def main(argv=None):
     data = {'scope': args.scope, 'dry_run': not args.apply, 'uid': uid,
             'candidates': candidates, 'preserved': skipped, 'active_workloads': blockers,
             'inspection_errors': errors, 'deleted': [], 'deletion_errors': [], 'status': 'preview'}
+    if args.scope == 'all-local':
+        print('all-local includes credentials, hidden configuration and session data; '
+              'deletion can prevent future login.')
     print(f'{len(candidates)} proposed deletions; approximately '
           f'{human_size(sum(t["bytes"] for t in candidates))} allocated (hard links may overcount).')
     print(f'{len(skipped)} entries preserved. Full inventory: {report}')
